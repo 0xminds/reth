@@ -14,6 +14,7 @@ use alloy_rpc_types_engine::{
     ExecutionPayload, ExecutionPayloadSidecar, ForkchoiceState, PayloadStatus, PayloadStatusEnum,
     PayloadValidationError,
 };
+use persistence_state::CurrentPersistenceAction;
 use reth_beacon_consensus::{
     BeaconConsensusEngineEvent, InvalidHeaderCache, MIN_BLOCKS_FOR_PIPELINE_RUN,
 };
@@ -1140,7 +1141,7 @@ where
                     debug!(target: "engine::tree", ?new_tip_num, "Starting remove blocks job");
                     let (tx, rx) = oneshot::channel();
                     let _ = self.persistence.remove_blocks_above(new_tip_num, tx);
-                    self.persistence_state.start(rx);
+                    self.persistence_state.start_remove(new_tip_num, rx);
                 }
             } else if self.should_persist() {
                 let blocks_to_persist = self.get_canonical_blocks_to_persist();
@@ -1149,14 +1150,14 @@ where
                 } else {
                     debug!(target: "engine::tree", blocks = ?blocks_to_persist.iter().map(|block| block.block.num_hash()).collect::<Vec<_>>(), "Persisting blocks");
                     let (tx, rx) = oneshot::channel();
-                    let _ = self.persistence.save_blocks(blocks_to_persist, tx);
-                    self.persistence_state.start(rx);
+                    let _ = self.persistence.save_blocks(blocks_to_persist.clone(), tx);
+                    self.persistence_state.start_save(blocks_to_persist, rx);
                 }
             }
         }
 
         if self.persistence_state.in_progress() {
-            let (mut rx, start_time) = self
+            let (mut rx, start_time, current_action) = self
                 .persistence_state
                 .rx
                 .take()
@@ -1182,7 +1183,9 @@ where
                     self.on_new_persisted_block()?;
                 }
                 Err(TryRecvError::Closed) => return Err(TryRecvError::Closed.into()),
-                Err(TryRecvError::Empty) => self.persistence_state.rx = Some((rx, start_time)),
+                Err(TryRecvError::Empty) => {
+                    self.persistence_state.rx = Some((rx, start_time, current_action))
+                }
             }
         }
         Ok(())
@@ -2228,8 +2231,17 @@ where
         // finish parallel computation. It is important that nothing is being persisted as
         // we are computing in parallel, because we initialize a different database transaction
         // per thread and it might end up with a different view of the database.
-        let persistence_in_progress = self.persistence_state.in_progress();
-        if !persistence_in_progress {
+        // let persistence_in_progress = self.persistence_state.in_progress();
+        let is_descendant_block = self.persistence_state.current_action().map_or(true, |action| {
+            match action {
+                CurrentPersistenceAction::SavingBlocks { blocks: _ } => {
+                    // TODO: check if this block is a descendant of the ones being persisted
+                    true
+                }
+                CurrentPersistenceAction::RemovingBlocks { new_tip_num: _ } => false,
+            }
+        });
+        if is_descendant_block {
             state_root_result = match self
                 .compute_state_root_parallel(block.parent_hash, &hashed_state)
             {
@@ -2245,7 +2257,7 @@ where
         let (state_root, trie_output) = if let Some(result) = state_root_result {
             result
         } else {
-            debug!(target: "engine::tree", block=?sealed_block.num_hash(), persistence_in_progress, "Failed to compute state root in parallel");
+            debug!(target: "engine::tree", block=?sealed_block.num_hash(), is_persistence_in_progress=?self.persistence_state.current_action().is_some(), "Failed to compute state root in parallel");
             state_provider.state_root_with_updates(hashed_state.clone())?
         };
 
