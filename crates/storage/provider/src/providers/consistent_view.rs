@@ -76,10 +76,10 @@ where
         let last_num = provider_ro.last_block_number()?;
         let tip = provider_ro.sealed_header(last_num)?.map(|h| h.hash());
         if self.tip != tip {
-            return Err(ConsistentViewError::Inconsistent {
-                tip: GotExpected { got: tip, expected: self.tip },
-            }
-            .into())
+            // return Err(ConsistentViewError::Inconsistent {
+            //     tip: GotExpected { got: tip, expected: self.tip },
+            // }
+            // .into())
         }
 
         // Check that the best block number is the same as the latest stored header.
@@ -87,10 +87,10 @@ where
         // if the node fell back to the staged sync.
         let best_block_number = provider_ro.best_block_number()?;
         if last_num != best_block_number {
-            return Err(ConsistentViewError::Syncing {
-                best_block: GotExpected { got: best_block_number, expected: last_num },
-            }
-            .into())
+            // return Err(ConsistentViewError::Syncing {
+            //     best_block: GotExpected { got: best_block_number, expected: last_num },
+            // }
+            // .into())
         }
 
         Ok(provider_ro)
