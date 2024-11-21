@@ -28,7 +28,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tracing::debug;
+use tracing::{debug, error};
 
 /// Result of the state root calculation
 pub(crate) type StateRootResult = Result<(B256, TrieUpdates), ParallelStateRootError>;
@@ -200,7 +200,13 @@ where
         let (tx, rx) = mpsc::sync_channel(1);
         rayon::spawn(move || {
             let result = ParallelProof::new(view, input).multiproof(targets);
-            let _ = tx.send(result);
+            if let Err(ref e) = result {
+                error!(target: "engine::root", error = ?e, "Could not calculate multiproof");
+            }
+
+            if let Err(e) = tx.send(result) {
+                error!(target: "engine::root", error = ?e, "Could not send multiproof result");
+            }
         });
 
         pending_proofs.push_back(rx);
